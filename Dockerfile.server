@@ -98,19 +98,18 @@ RUN find /app -not -perm -o=r -exec chmod o+r {} + && \
     find /app -type d -not -perm -o=x -exec chmod o+x {} + && \
     chmod -R 777 /home/craftagents
 
-USER craftagents
-
 ENV CRAFT_RPC_HOST=0.0.0.0
 ENV CRAFT_RPC_PORT=9100
 ENV CRAFT_WEBUI_DIR=/app/apps/webui/dist
 ENV CRAFT_BUNDLED_ASSETS_ROOT=/app/apps/electron
-# WhatsApp worker — Bun cannot run the CJS worker, so we point the adapter at
-# system `node` (installed above). If CRAFT_BUNDLED_ASSETS_ROOT changes, update
-# CRAFT_MESSAGING_WA_WORKER to match; the default in packages/server resolves
-# against CRAFT_BUNDLED_ASSETS_ROOT, but the layout above flattens to /app.
 ENV CRAFT_MESSAGING_WA_WORKER=/app/packages/messaging-whatsapp-worker/dist/worker.cjs
 ENV CRAFT_MESSAGING_NODE_BIN=node
 
+# Entrypoint that fixes volume ownership then drops to craftagents user.
+# Railway mounts volumes as root; this ensures the non-root user can write.
+RUN printf '#!/bin/sh\nchown -R craftagents:craftagents /home/craftagents/.craft-agent 2>/dev/null || true\nexec runuser -u craftagents -- "$@"\n' > /app/entrypoint.sh && \
+    chmod +x /app/entrypoint.sh
+
 EXPOSE 9100
 
-ENTRYPOINT ["bun", "run", "packages/server/src/index.ts"]
+ENTRYPOINT ["/app/entrypoint.sh", "bun", "run", "packages/server/src/index.ts"]
