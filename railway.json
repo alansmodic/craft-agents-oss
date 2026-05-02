@@ -5,7 +5,7 @@
     "dockerfilePath": "Dockerfile.server"
   },
   "deploy": {
-    "startCommand": "CRAFT_RPC_PORT=$PORT bun run packages/server/src/index.ts --allow-insecure-bind",
+    "startCommand": "/bin/sh -c \"CRAFT_RPC_PORT=$PORT bun run packages/server/src/index.ts --allow-insecure-bind\"",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 180,
     "restartPolicyType": "ON_FAILURE",
