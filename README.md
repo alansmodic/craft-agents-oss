@@ -241,6 +241,10 @@ docker run -d \
   craft-agents-server
 ```
 
+### Railway
+
+To run the headless server on [Railway](https://railway.com) (browser WebUI + thin-client access from the desktop app and CLI), see [`docs/railway.md`](docs/railway.md). The repo includes a `railway.json` that picks up `Dockerfile.server` automatically.
+
 ## CLI Client
 
 A terminal client that connects to a running Craft Agent server over WebSocket (`ws://` or `wss://`). Use it for scripting, CI/CD pipelines, server validation, or when you prefer the command line.
