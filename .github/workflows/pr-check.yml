@@ -15,7 +15,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.10
-      - run: bun install --frozen-lockfile
+      - name: bun install --frozen-lockfile
+        # --ignore-scripts skips postinstall steps (e.g. @vscode/ripgrep
+        # downloading a release binary), which hit rate limits / 403s in CI.
+        # We only need to verify the lockfile is consistent with package.json.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun install --frozen-lockfile --ignore-scripts
 
   docker-build:
     name: docker-build
