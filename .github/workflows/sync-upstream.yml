@@ -1,0 +1,97 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM: https://github.com/craft-ai-agents/craft-agents-oss.git
+  UPSTREAM_BRANCH: main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM"
+          git fetch upstream "$UPSTREAM_BRANCH"
+
+      - name: Check if already up to date
+        id: check
+        run: |
+          BEHIND=$(git rev-list --count HEAD..upstream/$UPSTREAM_BRANCH)
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          if [ "$BEHIND" = "0" ]; then
+            echo "Fork is up to date with upstream."
+          else
+            echo "Fork is behind upstream by $BEHIND commit(s)."
+          fi
+
+      - name: Attempt merge on temp branch
+        if: steps.check.outputs.behind != '0'
+        id: merge
+        run: |
+          BRANCH="sync/upstream-$(date -u +%Y%m%d-%H%M%S)"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git checkout -b "$BRANCH"
+          if git merge --no-edit upstream/$UPSTREAM_BRANCH; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            # Stage everything (including conflict markers) so the branch can be pushed.
+            git add -A
+            git -c user.name="github-actions[bot]" \
+                -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+                commit --no-verify -m "WIP: merge upstream/$UPSTREAM_BRANCH (conflicts)"
+          fi
+
+      - name: Push branch
+        if: steps.check.outputs.behind != '0'
+        run: git push origin "${{ steps.merge.outputs.branch }}"
+
+      - name: Open PR (clean merge — auto-merge enabled)
+        if: steps.check.outputs.behind != '0' && steps.merge.outputs.conflict == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_URL=$(gh pr create \
+            --base main \
+            --head "${{ steps.merge.outputs.branch }}" \
+            --title "chore: sync upstream craft-ai-agents/main" \
+            --body "Automated sync. No conflicts. Auto-merge is enabled; this PR will merge once required checks pass.")
+          # Best-effort auto-merge; ignore failure if repo doesn't have auto-merge enabled.
+          gh pr merge --auto --merge "$PR_URL" || echo "Auto-merge not available; PR left open for manual merge."
+
+      - name: Open PR (conflicts — manual resolution required)
+        if: steps.check.outputs.behind != '0' && steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base main \
+            --head "${{ steps.merge.outputs.branch }}" \
+            --title "conflict: sync upstream craft-ai-agents/main (manual merge required)" \
+            --body "Automated sync hit merge conflicts. The branch was pushed with conflict markers in place — check out locally, resolve, and push back to this branch. **Do not merge until conflicts are resolved.**" \
+            --label "sync-conflict" || \
+          gh pr create \
+            --base main \
+            --head "${{ steps.merge.outputs.branch }}" \
+            --title "conflict: sync upstream craft-ai-agents/main (manual merge required)" \
+            --body "Automated sync hit merge conflicts. The branch was pushed with conflict markers in place — check out locally, resolve, and push back to this branch. **Do not merge until conflicts are resolved.**"
