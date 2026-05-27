@@ -102,6 +102,10 @@ ENV CRAFT_RPC_HOST=0.0.0.0
 ENV CRAFT_RPC_PORT=9100
 ENV CRAFT_WEBUI_DIR=/app/apps/webui/dist
 ENV CRAFT_BUNDLED_ASSETS_ROOT=/app/apps/electron
+# WhatsApp worker — Bun cannot run the CJS worker, so we point the adapter at
+# system `node` (installed above). If CRAFT_BUNDLED_ASSETS_ROOT changes, update
+# CRAFT_MESSAGING_WA_WORKER to match; the default in packages/server resolves
+# against CRAFT_BUNDLED_ASSETS_ROOT, but the layout above flattens to /app.
 ENV CRAFT_MESSAGING_WA_WORKER=/app/packages/messaging-whatsapp-worker/dist/worker.cjs
 ENV CRAFT_MESSAGING_NODE_BIN=node
 

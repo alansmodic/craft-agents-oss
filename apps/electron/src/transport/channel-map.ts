@@ -305,6 +305,12 @@ export const CHANNEL_MAP = {
   getEnable1MContext: invoke(RPC_CHANNELS.caching.GET_ENABLE_1M_CONTEXT),
   setEnable1MContext: invoke(RPC_CHANNELS.caching.SET_ENABLE_1M_CONTEXT),
 
+  // RTK token optimization
+  getRtkEnabled: invoke(RPC_CHANNELS.rtk.GET_ENABLED),
+  setRtkEnabled: invoke(RPC_CHANNELS.rtk.SET_ENABLED),
+  getRtkStatus: invoke(RPC_CHANNELS.rtk.GET_STATUS),
+  getRtkGain: invoke(RPC_CHANNELS.rtk.GET_GAIN),
+
   // Badge
   refreshBadge: invoke(RPC_CHANNELS.badge.REFRESH),
   setDockIconWithBadge: invoke(RPC_CHANNELS.badge.SET_ICON),
@@ -400,4 +406,15 @@ export const CHANNEL_MAP = {
   startWhatsAppConnect: invoke(RPC_CHANNELS.messaging.WA_START_CONNECT),
   submitWhatsAppPhone: invoke(RPC_CHANNELS.messaging.WA_SUBMIT_PHONE),
   onWhatsAppEvent: listener(RPC_CHANNELS.messaging.WA_UI_EVENT),
+
+  // Messaging access control (Phase 3)
+  getMessagingPlatformOwners: invoke(RPC_CHANNELS.messaging.GET_PLATFORM_OWNERS),
+  setMessagingPlatformOwners: invoke(RPC_CHANNELS.messaging.SET_PLATFORM_OWNERS),
+  getMessagingPlatformAccessMode: invoke(RPC_CHANNELS.messaging.GET_PLATFORM_ACCESS_MODE),
+  setMessagingPlatformAccessMode: invoke(RPC_CHANNELS.messaging.SET_PLATFORM_ACCESS_MODE),
+  getMessagingPendingSenders: invoke(RPC_CHANNELS.messaging.GET_PENDING_SENDERS),
+  dismissMessagingPendingSender: invoke(RPC_CHANNELS.messaging.DISMISS_PENDING_SENDER),
+  allowMessagingPendingSender: invoke(RPC_CHANNELS.messaging.ALLOW_PENDING_SENDER),
+  setMessagingBindingAccess: invoke(RPC_CHANNELS.messaging.SET_BINDING_ACCESS),
+  onMessagingPendingChanged: listener(RPC_CHANNELS.messaging.PENDING_CHANGED),
 } satisfies ChannelMap
