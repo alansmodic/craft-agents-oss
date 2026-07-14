@@ -1,21 +1,26 @@
 name: Sync upstream
 
+# Keeps this fork current with craft-ai-agents/craft-agents-oss.
+# Strategy: merge upstream and push the result STRAIGHT TO main using the
+# built-in GITHUB_TOKEN (contents:write). No pull request is created, because
+# the default token cannot create PRs on this repo and a PAT would be extra
+# setup. Lockfile-only conflicts are auto-resolved from upstream (this fork
+# does not modify package.json, so upstream's bun.lock is always correct).
+# Genuine conflicts are pushed to a sync/* branch and the job fails loudly so
+# the maintainer is notified to resolve them by hand.
+
 on:
   schedule:
-    - cron: '17 6 * * 1'
+    - cron: '17 6 * * 1'   # every Monday 06:17 UTC
   workflow_dispatch:
 
 permissions:
   contents: write
-  pull-requests: write
 
 env:
   UPSTREAM: https://github.com/craft-ai-agents/craft-agents-oss.git
   UPSTREAM_BRANCH: main
-  # Files that only ever differ because of regeneration, not intent.
-  # On conflict, these are resolved by taking the upstream copy verbatim.
-  # (This fork does not modify package.json, so upstream's bun.lock is always
-  # the correct, self-consistent lockfile for the merged tree.)
+  # On conflict, take the upstream copy of these files verbatim.
   AUTO_RESOLVE_THEIRS: bun.lock
 
 jobs:
@@ -44,73 +49,45 @@ jobs:
           BEHIND=$(git rev-list --count HEAD..upstream/$UPSTREAM_BRANCH)
           echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
           if [ "$BEHIND" = "0" ]; then
-            echo "Fork is up to date with upstream."
+            echo "✅ Fork is already up to date with upstream."
           else
             echo "Fork is behind upstream by $BEHIND commit(s)."
           fi
 
-      - name: Attempt merge on temp branch
+      - name: Merge upstream and push to main
         if: steps.check.outputs.behind != '0'
-        id: merge
         run: |
           set -euo pipefail
-          BRANCH="sync/upstream-$(date -u +%Y%m%d-%H%M%S)"
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-          git checkout -b "$BRANCH"
 
+          # Merge directly on the checked-out main branch.
           if git merge --no-edit "upstream/$UPSTREAM_BRANCH"; then
-            echo "conflict=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "Merge produced conflicts; attempting to auto-resolve known lockfiles."
-          # Resolve any auto-resolvable files by taking the upstream version.
-          for f in $AUTO_RESOLVE_THEIRS; do
-            if git diff --name-only --diff-filter=U | grep -qx "$f"; then
-              echo "Auto-resolving $f from upstream."
-              git checkout "upstream/$UPSTREAM_BRANCH" -- "$f"
-              git add "$f"
-            fi
-          done
-
-          # If any conflicts remain after auto-resolution, fall back to manual path.
-          REMAINING="$(git diff --name-only --diff-filter=U)"
-          if [ -n "$REMAINING" ]; then
-            echo "Unresolved conflicts remain:"
-            echo "$REMAINING"
-            git add -A
-            git commit --no-verify -m "WIP: merge upstream/$UPSTREAM_BRANCH (conflicts)"
-            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            echo "Clean merge."
           else
+            echo "Merge produced conflicts; attempting to auto-resolve known lockfiles."
+            for f in $AUTO_RESOLVE_THEIRS; do
+              if git diff --name-only --diff-filter=U | grep -qx "$f"; then
+                echo "Auto-resolving $f from upstream."
+                git checkout "upstream/$UPSTREAM_BRANCH" -- "$f"
+                git add "$f"
+              fi
+            done
+
+            REMAINING="$(git diff --name-only --diff-filter=U || true)"
+            if [ -n "$REMAINING" ]; then
+              echo "::warning::Unresolved conflicts remain — routing to a manual-merge branch."
+              echo "$REMAINING"
+              BRANCH="sync/upstream-$(date -u +%Y%m%d-%H%M%S)"
+              git add -A
+              git commit --no-verify -m "WIP: merge upstream/$UPSTREAM_BRANCH (conflicts)"
+              git branch "$BRANCH"
+              git push origin "HEAD:refs/heads/$BRANCH"
+              echo "::error::Upstream sync hit conflicts in: $REMAINING. A branch '$BRANCH' was pushed with conflict markers. Resolve it locally, then merge into main."
+              exit 1
+            fi
+
             git commit --no-edit
-            echo "conflict=false" >> "$GITHUB_OUTPUT"
+            echo "Conflicts auto-resolved."
           fi
 
-      - name: Push branch
-        if: steps.check.outputs.behind != '0'
-        run: git push origin "${{ steps.merge.outputs.branch }}"
-
-      - name: Open PR (clean merge — auto-merge enabled)
-        if: steps.check.outputs.behind != '0' && steps.merge.outputs.conflict == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR_URL=$(gh pr create \
-            --base main \
-            --head "${{ steps.merge.outputs.branch }}" \
-            --title "chore: sync upstream craft-ai-agents/main" \
-            --body "Automated sync of ${{ steps.check.outputs.behind }} upstream commit(s). Lockfile conflicts (if any) were auto-resolved from upstream. Auto-merge is enabled; this PR merges once mergeable.")
-          echo "Opened $PR_URL"
-          gh pr merge --auto --merge "$PR_URL" || gh pr merge --merge "$PR_URL" || echo "Auto-merge unavailable; PR left open for manual merge."
-
-      - name: Open PR (conflicts — manual resolution required)
-        if: steps.check.outputs.behind != '0' && steps.merge.outputs.conflict == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr create \
-            --base main \
-            --head "${{ steps.merge.outputs.branch }}" \
-            --title "conflict: sync upstream craft-ai-agents/main (manual merge required)" \
-            --body "Automated sync hit merge conflicts that could not be auto-resolved. The branch was pushed with conflict markers in place — check out locally, resolve, and push back to this branch. **Do not merge until conflicts are resolved.**" \
-            --label "sync-conflict"
+          git push origin HEAD:main
+          echo "✅ Synced ${{ steps.check.outputs.behind }} upstream commit(s) to main."
