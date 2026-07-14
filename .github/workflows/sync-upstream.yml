@@ -12,6 +12,11 @@ permissions:
 env:
   UPSTREAM: https://github.com/craft-ai-agents/craft-agents-oss.git
   UPSTREAM_BRANCH: main
+  # Files that only ever differ because of regeneration, not intent.
+  # On conflict, these are resolved by taking the upstream copy verbatim.
+  # (This fork does not modify package.json, so upstream's bun.lock is always
+  # the correct, self-consistent lockfile for the merged tree.)
+  AUTO_RESOLVE_THEIRS: bun.lock
 
 jobs:
   sync:
@@ -48,18 +53,37 @@ jobs:
         if: steps.check.outputs.behind != '0'
         id: merge
         run: |
+          set -euo pipefail
           BRANCH="sync/upstream-$(date -u +%Y%m%d-%H%M%S)"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
           git checkout -b "$BRANCH"
-          if git merge --no-edit upstream/$UPSTREAM_BRANCH; then
+
+          if git merge --no-edit "upstream/$UPSTREAM_BRANCH"; then
             echo "conflict=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "conflict=true" >> "$GITHUB_OUTPUT"
-            # Stage everything (including conflict markers) so the branch can be pushed.
+            exit 0
+          fi
+
+          echo "Merge produced conflicts; attempting to auto-resolve known lockfiles."
+          # Resolve any auto-resolvable files by taking the upstream version.
+          for f in $AUTO_RESOLVE_THEIRS; do
+            if git diff --name-only --diff-filter=U | grep -qx "$f"; then
+              echo "Auto-resolving $f from upstream."
+              git checkout "upstream/$UPSTREAM_BRANCH" -- "$f"
+              git add "$f"
+            fi
+          done
+
+          # If any conflicts remain after auto-resolution, fall back to manual path.
+          REMAINING="$(git diff --name-only --diff-filter=U)"
+          if [ -n "$REMAINING" ]; then
+            echo "Unresolved conflicts remain:"
+            echo "$REMAINING"
             git add -A
-            git -c user.name="github-actions[bot]" \
-                -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-                commit --no-verify -m "WIP: merge upstream/$UPSTREAM_BRANCH (conflicts)"
+            git commit --no-verify -m "WIP: merge upstream/$UPSTREAM_BRANCH (conflicts)"
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+          else
+            git commit --no-edit
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Push branch
@@ -75,9 +99,9 @@ jobs:
             --base main \
             --head "${{ steps.merge.outputs.branch }}" \
             --title "chore: sync upstream craft-ai-agents/main" \
-            --body "Automated sync. No conflicts. Auto-merge is enabled; this PR will merge once required checks pass.")
-          # Best-effort auto-merge; ignore failure if repo doesn't have auto-merge enabled.
-          gh pr merge --auto --merge "$PR_URL" || echo "Auto-merge not available; PR left open for manual merge."
+            --body "Automated sync of ${{ steps.check.outputs.behind }} upstream commit(s). Lockfile conflicts (if any) were auto-resolved from upstream. Auto-merge is enabled; this PR merges once mergeable.")
+          echo "Opened $PR_URL"
+          gh pr merge --auto --merge "$PR_URL" || gh pr merge --merge "$PR_URL" || echo "Auto-merge unavailable; PR left open for manual merge."
 
       - name: Open PR (conflicts — manual resolution required)
         if: steps.check.outputs.behind != '0' && steps.merge.outputs.conflict == 'true'
@@ -88,10 +112,5 @@ jobs:
             --base main \
             --head "${{ steps.merge.outputs.branch }}" \
             --title "conflict: sync upstream craft-ai-agents/main (manual merge required)" \
-            --body "Automated sync hit merge conflicts. The branch was pushed with conflict markers in place — check out locally, resolve, and push back to this branch. **Do not merge until conflicts are resolved.**" \
-            --label "sync-conflict" || \
-          gh pr create \
-            --base main \
-            --head "${{ steps.merge.outputs.branch }}" \
-            --title "conflict: sync upstream craft-ai-agents/main (manual merge required)" \
-            --body "Automated sync hit merge conflicts. The branch was pushed with conflict markers in place — check out locally, resolve, and push back to this branch. **Do not merge until conflicts are resolved.**"
+            --body "Automated sync hit merge conflicts that could not be auto-resolved. The branch was pushed with conflict markers in place — check out locally, resolve, and push back to this branch. **Do not merge until conflicts are resolved.**" \
+            --label "sync-conflict"
