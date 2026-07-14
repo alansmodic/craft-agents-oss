@@ -272,7 +272,7 @@ export interface CoreBackendConfig {
    */
   onImageResize?: (filePath: string, maxSizeBytes: number) => Promise<string | null>;
 
-  /** Enable 1M context window for Opus 4.7. Default: true. Set false to use 200K and conserve usage limits. */
+  /** Enable 1M context window for current Opus models. Default: true. Set false to use 200K and conserve usage limits. */
   enable1MContext?: boolean;
 
   /**
@@ -368,6 +368,13 @@ export interface AgentBackend {
    * @param reason - AbortReason enum value
    */
   forceAbort(reason: AbortReason): void;
+
+  /**
+   * WS2: register a sink for background task events that arrive BETWEEN turns
+   * (when no chat() generator is being consumed) under keep-alive mode. Backends
+   * without a persistent cross-turn query may leave this unimplemented.
+   */
+  setBackgroundEventSink?(sink: ((event: AgentEvent) => void) | null): void;
 
   /**
    * Interrupt the current turn because control is being handed to the UI.
@@ -638,7 +645,7 @@ export interface BackendConfig extends CoreBackendConfig {
    * Provider/SDK to use for this backend.
    * Determines which agent class is instantiated:
    * - 'anthropic' → ClaudeAgent (Anthropic SDK)
-   * - 'pi' → PiAgent (Pi via @mariozechner/pi-coding-agent)
+   * - 'pi' → PiAgent (Pi via @earendil-works/pi-coding-agent)
    */
   provider: AgentProvider;
 
