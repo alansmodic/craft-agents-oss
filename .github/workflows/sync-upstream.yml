@@ -1,13 +1,26 @@
 name: Sync upstream
 
 # Keeps this fork current with craft-ai-agents/craft-agents-oss.
-# Strategy: merge upstream and push the result STRAIGHT TO main using the
-# built-in GITHUB_TOKEN (contents:write). No pull request is created, because
-# the default token cannot create PRs on this repo and a PAT would be extra
-# setup. Lockfile-only conflicts are auto-resolved from upstream (this fork
-# does not modify package.json, so upstream's bun.lock is always correct).
-# Genuine conflicts are pushed to a sync/* branch and the job fails loudly so
-# the maintainer is notified to resolve them by hand.
+#
+# `main` is a protected branch: changes must go through a PR and the
+# `lockfile-frozen` + `docker-build` checks must pass. The built-in
+# GITHUB_TOKEN cannot create PRs here, and PRs it did create would not
+# trigger those checks — so this workflow authenticates with a user PAT
+# stored as the `SYNC_PAT` secret. A PAT belonging to a repo admin opens
+# the PR, its push triggers the required checks, and auto-merge lands it
+# once they are green. Hands-off after the secret is set once.
+#
+# bun.lock: this fork's dependency set differs from upstream's, and the
+# lockfile is version-sensitive, so the lockfile is REGENERATED with the
+# same bun version CI pins (see BUN_VERSION) rather than copied from either
+# side. That guarantees the `lockfile-frozen` check passes.
+#
+# Non-lockfile conflicts are pushed as a draft PR for manual resolution.
+#
+# One-time setup (see docs/upstream-sync.md):
+#   Create a fine-grained PAT on alansmodic/craft-agents-oss with
+#   Contents: Read+Write and Pull requests: Read+Write, then add it as an
+#   Actions secret named SYNC_PAT.
 
 on:
   schedule:
@@ -15,23 +28,36 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read   # real work is done with SYNC_PAT, not GITHUB_TOKEN
 
 env:
   UPSTREAM: https://github.com/craft-ai-agents/craft-agents-oss.git
   UPSTREAM_BRANCH: main
-  # On conflict, take the upstream copy of these files verbatim.
-  AUTO_RESOLVE_THEIRS: bun.lock
+  BUN_VERSION: 1.3.10   # keep in sync with .github/workflows/pr-check.yml
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
+      - name: Verify SYNC_PAT is configured
+        env:
+          SYNC_PAT: ${{ secrets.SYNC_PAT }}
+        run: |
+          if [ -z "$SYNC_PAT" ]; then
+            echo "::error::Secret SYNC_PAT is not set. Create a fine-grained PAT (Contents: RW, Pull requests: RW on this repo) and add it as an Actions secret named SYNC_PAT. See docs/upstream-sync.md."
+            exit 1
+          fi
+
       - name: Checkout fork
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.SYNC_PAT }}
+
+      - name: Set up bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
 
       - name: Configure git
         run: |
@@ -54,40 +80,69 @@ jobs:
             echo "Fork is behind upstream by $BEHIND commit(s)."
           fi
 
-      - name: Merge upstream and push to main
+      - name: Merge upstream on a sync branch
         if: steps.check.outputs.behind != '0'
+        id: merge
         run: |
           set -euo pipefail
+          BRANCH="sync/upstream-$(date -u +%Y%m%d-%H%M%S)"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git checkout -b "$BRANCH"
 
-          # Merge directly on the checked-out main branch.
-          if git merge --no-edit "upstream/$UPSTREAM_BRANCH"; then
-            echo "Clean merge."
-          else
-            echo "Merge produced conflicts; attempting to auto-resolve known lockfiles."
-            for f in $AUTO_RESOLVE_THEIRS; do
-              if git diff --name-only --diff-filter=U | grep -qx "$f"; then
-                echo "Auto-resolving $f from upstream."
-                git checkout "upstream/$UPSTREAM_BRANCH" -- "$f"
-                git add "$f"
-              fi
-            done
+          # Stage the merge without committing so we can regenerate the lockfile
+          # before finalizing the commit.
+          git merge --no-commit --no-ff "upstream/$UPSTREAM_BRANCH" || true
 
-            REMAINING="$(git diff --name-only --diff-filter=U || true)"
-            if [ -n "$REMAINING" ]; then
-              echo "::warning::Unresolved conflicts remain — routing to a manual-merge branch."
-              echo "$REMAINING"
-              BRANCH="sync/upstream-$(date -u +%Y%m%d-%H%M%S)"
-              git add -A
-              git commit --no-verify -m "WIP: merge upstream/$UPSTREAM_BRANCH (conflicts)"
-              git branch "$BRANCH"
-              git push origin "HEAD:refs/heads/$BRANCH"
-              echo "::error::Upstream sync hit conflicts in: $REMAINING. A branch '$BRANCH' was pushed with conflict markers. Resolve it locally, then merge into main."
-              exit 1
-            fi
-
-            git commit --no-edit
-            echo "Conflicts auto-resolved."
+          # A conflicted bun.lock is thrown away and regenerated below; take
+          # upstream's copy just to clear the conflict marker.
+          if git diff --name-only --diff-filter=U | grep -qx "bun.lock"; then
+            git checkout "upstream/$UPSTREAM_BRANCH" -- bun.lock
+            git add bun.lock
           fi
 
-          git push origin HEAD:main
-          echo "✅ Synced ${{ steps.check.outputs.behind }} upstream commit(s) to main."
+          # Any remaining (non-lockfile) conflicts require a human.
+          REMAINING="$(git diff --name-only --diff-filter=U || true)"
+          if [ -n "$REMAINING" ]; then
+            echo "::warning::Unresolved conflicts remain: $REMAINING"
+            git add -A
+            git commit --no-verify -m "WIP: merge upstream/$UPSTREAM_BRANCH (conflicts)"
+            git push origin "$BRANCH"
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Regenerate the lockfile from the merged package.json set so the
+          # frozen check passes, then finalize the merge commit.
+          bun install --ignore-scripts
+          git add bun.lock
+          git commit --no-edit
+          git push origin "$BRANCH"
+          echo "conflict=false" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR and enable auto-merge (clean)
+        if: steps.check.outputs.behind != '0' && steps.merge.outputs.conflict == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          PR_URL=$(gh pr create \
+            --base main \
+            --head "${{ steps.merge.outputs.branch }}" \
+            --title "chore: sync upstream craft-ai-agents/main" \
+            --body "Automated sync of ${{ steps.check.outputs.behind }} upstream commit(s). bun.lock regenerated with bun ${{ env.BUN_VERSION }}. Auto-merge enabled; merges once \`lockfile-frozen\` and \`docker-build\` pass.")
+          echo "Opened $PR_URL"
+          gh pr merge --auto --merge "$PR_URL" || echo "::warning::Could not enable auto-merge; merge $PR_URL manually once checks pass."
+
+      - name: Open draft PR (conflicts — manual resolution)
+        if: steps.check.outputs.behind != '0' && steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          gh pr create \
+            --base main \
+            --head "${{ steps.merge.outputs.branch }}" \
+            --draft \
+            --title "conflict: sync upstream craft-ai-agents/main (manual merge required)" \
+            --body "Automated sync hit conflicts that could not be auto-resolved. Branch pushed with conflict markers. Check out locally, resolve, push, then mark ready & merge. **Do not merge until resolved.**" \
+            --label "sync-conflict"
+          echo "::error::Upstream sync hit conflicts — a draft PR was opened for manual resolution."
+          exit 1
