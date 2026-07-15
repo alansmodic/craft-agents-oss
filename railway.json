@@ -5,7 +5,7 @@
     "dockerfilePath": "Dockerfile.server"
   },
   "deploy": {
-    "startCommand": "/bin/sh -c \"CRAFT_RPC_PORT=$PORT bun run packages/server/src/index.ts --allow-insecure-bind\"",
+    "startCommand": "/bin/sh -c \"chown -R craftagents:craftagents /home/craftagents/.craft-agent 2>/dev/null || true; exec runuser -u craftagents -- env HOME=/home/craftagents CRAFT_CONFIG_DIR=/home/craftagents/.craft-agent CRAFT_RPC_PORT=$PORT bun run packages/server/src/index.ts --allow-insecure-bind\"",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 180,
     "restartPolicyType": "ON_FAILURE",
